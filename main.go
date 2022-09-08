@@ -1,13 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"github.com/jackc/pgx/v4"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
@@ -23,6 +23,7 @@ const addr string = "localhost:8080"
 type Storage interface {
 	Put(string, string) error
 	Get(string) (string, error)
+	Close()
 }
 
 type InMemoryStorage struct {
@@ -39,12 +40,17 @@ func (i InMemoryStorage) Get(urlHash string) (string, error) {
 
 }
 
+func (i InMemoryStorage) Close() {
+
+}
+
 type DbStorage struct {
 	dbStore *pgx.Conn
 }
 
 func (d DbStorage) Put(urlHash string, originalLink string) error {
-	_, err := d.dbStore.Exec(context.Background(), "INSERT INTO links (\"originalLink\", \"shortLink\") VALUES ($1,$2)", originalLink, urlHash)
+	_, err := d.dbStore.Exec(context.Background(), "INSERT INTO links (\"originalLink\", \"shortLink\") VALUES ($1,$2) "+
+		"\tON CONFLICT (\"shortLink\") \tDO NOTHING;", originalLink, urlHash)
 	if err != nil {
 		return err
 	}
@@ -69,12 +75,18 @@ func (d DbStorage) Get(urlHash string) (string, error) {
 	return originalLink, nil
 }
 
+func (d DbStorage) Close() {
+	d.dbStore.Close(context.Background())
+}
+
 func setupStorage() (Storage, error) {
-	// todo: detect -d flag
 	useDB := flag.Bool("d", false, "storage selection")
 	flag.Parse()
 	if *useDB {
-		urlDb, _ := getUrlDB()
+		urlDb, err := getUrlDB()
+		if err != nil {
+			return nil, err
+		}
 		conn, err := pgx.Connect(context.Background(), urlDb)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
@@ -86,14 +98,13 @@ func setupStorage() (Storage, error) {
 }
 
 func main() {
-	// todo: где вызывать?
-	//defer conn.Close(context.Background())
 	mux := http.NewServeMux()
 	storage, err := setupStorage()
 	if err != nil {
-		// todo: какой комментарий ошибки написать?
+		fmt.Fprintf(os.Stderr, "Could't setup a storage %v\n", err)
 		os.Exit(1)
 	}
+	defer storage.Close()
 	srv := service{storage: storage}
 	mux.HandleFunc("/", srv.handle)
 	http.ListenAndServe(addr, mux)
@@ -111,8 +122,8 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *service) Post(w http.ResponseWriter, r *http.Request) {
-	// todo replace by not deprecated method
-	body, err := ioutil.ReadAll(r.Body)
+	var body string
+	_, err := fmt.Fscanf(r.Body, "%s", &body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
@@ -123,6 +134,7 @@ func (s *service) Post(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
+		return
 	}
 	shortLink := "http://" + addr + "/" + urlHash
 	w.WriteHeader(http.StatusOK)
@@ -149,12 +161,22 @@ func getHashURL(url string) string {
 
 // todo something here looks not good
 func getUrlDB() (string, error) {
-	fContent, err := ioutil.ReadFile("linkFromDB.txt")
+	result := ""
+	file, err := os.Open("linkFromDB.txt")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-		os.Exit(1)
+		return "", err
 	}
-	return string(fContent), nil
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		result += scanner.Text()
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return result, nil
 }
 
 func trimFirstRune(s string) string {
