@@ -51,10 +51,7 @@ type DbStorage struct {
 func (d DbStorage) Put(urlHash string, originalLink string) error {
 	_, err := d.dbStore.Exec(context.Background(), "INSERT INTO links (\"originalLink\", \"shortLink\") VALUES ($1,$2) "+
 		"\tON CONFLICT (\"shortLink\") \tDO NOTHING;", originalLink, urlHash)
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 func (d DbStorage) Get(urlHash string) (string, error) {
@@ -159,7 +156,6 @@ func getHashURL(url string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// todo something here looks not good
 func getUrlDB() (string, error) {
 	result := ""
 	file, err := os.Open("linkFromDB.txt")
